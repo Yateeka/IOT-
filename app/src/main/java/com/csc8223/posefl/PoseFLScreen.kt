@@ -11,8 +11,8 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 fun PoseFLScreen(
-vm: AppVM,
-modifier: Modifier = Modifier
+    vm: AppVM,
+    modifier: Modifier = Modifier
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     val tabs = listOf("Collect", "Train", "Infer")
@@ -69,8 +69,10 @@ modifier: Modifier = Modifier
                     )
 
                     Text("Dataset split")
+
+                    // Includes calibration as a third option.
                     Row {
-                        listOf("train", "test").forEach { option ->
+                        listOf("train", "test", "calib").forEach { option ->
                             TextButton(
                                 onClick = { vm.split = option }
                             ) {
@@ -104,9 +106,9 @@ modifier: Modifier = Modifier
                     Text(vm.summary)
 
                     OutlinedButton(
-                        onClick = { vm.store.export(
-                            vm.getApplication()
-                        ) }
+                        onClick = {
+                            vm.store.export(vm.getApplication())
+                        }
                     ) {
                         Text("Export CSV")
                     }
@@ -116,6 +118,7 @@ modifier: Modifier = Modifier
                     Text("Train Models")
 
                     Text("Feature configuration")
+
                     FeatureConfig.entries.forEach { option ->
                         Row {
                             RadioButton(
@@ -154,6 +157,7 @@ modifier: Modifier = Modifier
                     }
 
                     Text("Activity log")
+
                     vm.log.forEach { message ->
                         Text(message)
                     }
