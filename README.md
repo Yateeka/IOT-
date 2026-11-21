@@ -20,8 +20,8 @@ The app reads the phone's gravity and accelerometer sensors, trains a small neur
 | 1 | Screen Down | z about -9.8 |
 | 2 | Portrait Up | y about +9.8 |
 | 3 | Portrait Down | y about -9.8 |
-| 4 | Landscape Left (top edge points left) | x about +9.8 |
-| 5 | Landscape Right (top edge points right) | x about -9.8 |
+| 4 | Landscape Left (LEFT edge UP; top edge RIGHT) | x about -9.8 |
+| 5 | Landscape Right (RIGHT edge UP; top edge LEFT) | x about +9.8 |
 
 The landscape signs can differ between phone models. Verify on your device and record what you observe.
 
