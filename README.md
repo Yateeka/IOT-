@@ -1,196 +1,435 @@
+
 # PoseFL Android Client
 
-Android client for **Privacy-Preserving Smartphone Pose Classification Using Federated Learning** (CSC 8223 course project, Zihan Tang and Yateeka Goyal).
+Android client for **Privacy-Preserving Smartphone Pose Classification Using Federated Learning**.
 
-The app reads the phone's gravity and accelerometer sensors, trains a small neural network on-device, and takes part in federated learning with a laptop-hosted FastAPI server. Raw sensor data never leaves the phone. Only model weights are uploaded.
+**Course:** CSC 8223  
+**Team:** Yateeka Goyal and Zihan Tang
 
-## What the app does
+## 1. Project Overview
 
-| Tab | Purpose |
+PoseFL recognizes six smartphone poses using gravity and accelerometer sensor measurements.
+
+Two Android phones train models locally and participate in federated learning (FL). Only model parameters are exchanged with the laptop-hosted coordinator during FL training; raw training windows remain on each phone unless manually exported for analysis.
+
+The Android app provides three tabs:
+
+| Tab | Function |
 |---|---|
-| **Collect** | Record labeled 1-second sensor windows for one of six phone poses, save them to a local CSV, and export it. |
-| **Train** | Train a local-only baseline model, run one federated round, refresh the global model, and evaluate on test data. |
-| **Infer** | Live pose prediction with per-class probability bars, using either the local or the global model. |
+| Collect | Record labeled sensor windows and export CSV files |
+| Train | Train local models, participate in FL, and evaluate |
+| Infer | Predict the current phone pose |
 
-### The six poses
+## 2. Correct Phone Pose Definitions
 
-| Label | Pose | Expected gravity |
-|---|---|---|
-| 0 | Screen Up | z about +9.8 |
-| 1 | Screen Down | z about -9.8 |
-| 2 | Portrait Up | y about +9.8 |
-| 3 | Portrait Down | y about -9.8 |
-| 4 | Landscape Left (LEFT edge UP; top edge RIGHT) | x about -9.8 |
-| 5 | Landscape Right (RIGHT edge UP; top edge LEFT) | x about +9.8 |
+**IMPORTANT: Use the physical edge of the phone to identify each pose.**
 
-The landscape signs can differ between phone models. Verify on your device and record what you observe.
+The course assignment defines landscape poses by which side edge points upward.
 
-## How it works
-
-1. **Sensing.** `SensorCollector` registers the gravity and accelerometer sensors at a 20,000 microsecond period (about 50 Hz, a hint rather than a guarantee). If the phone has no gravity sensor, a low-pass filter on the accelerometer is used.
-2. **Windowing.** `WindowBuilder` makes non-overlapping 1-second windows, so adjacent windows cannot leak between train and test.
-3. **Features.** Each window is stored as raw summaries (means, medians, accelerometer std). Six model inputs are computed from those on demand, using one of three configurations:
-   - `BASELINE`: accel mean and gravity mean, each divided by 9.81.
-   - `GRAV_NORM`: unit gravity vector plus gravity-removed acceleration divided by 9.81.
-   - `ROBUST`: like `GRAV_NORM` but with medians, and windows with accelerometer std above `STD_MAX` are rejected.
-4. **Model.** An MLP with 6 inputs, 16 ReLU hidden units, and 6 softmax outputs, trained with cross-entropy and per-sample SGD in plain Kotlin (no ML library).
-5. **Federated learning.** Each round, the phone downloads the global weights, trains 3 local epochs on its own `train` windows, and uploads its weights and sample count. The server aggregates with FedAvg:
-
-   `W_global = (nA * WA + nB * WB) / (nA + nB)`
-
-## Model weight layout (shared contract with the server)
-
-The model is a flat array of **214 floats**. Kotlin and NumPy must use exactly this order.
-
-| Part | Shape | Offset | Length |
+| Label | Pose | Correct Physical Position | Expected Gravity |
 |---|---|---|---|
-| `W1` | 16 x 6, row-major | 0 | 96 |
-| `b1` | 16 | 96 | 16 |
-| `W2` | 6 x 16, row-major | 112 | 96 |
-| `b2` | 6 | 208 | 6 |
+| 0 | Screen Up | Screen faces upward | Z ≈ +9.8 |
+| 1 | Screen Down | Screen faces downward | Z ≈ -9.8 |
+| 2 | Portrait Up | Top edge points upward | Y ≈ +9.8 |
+| 3 | Portrait Down | Top edge points downward | Y ≈ -9.8 |
+| 4 | Landscape Left | LEFT side edge points UP; top edge points RIGHT | X ≈ -9.8 |
+| 5 | Landscape Right | RIGHT side edge points UP; top edge points LEFT | X ≈ +9.8 |
 
-## Server API
+Gravity readings are approximate values based on Client A's tested device. Verify the readings on Client B's phone before recording.
 
-| Endpoint | Request | Response |
+### Important Correction — November 21, 2026
+
+An earlier data-collection guide accidentally reversed the physical instructions for Landscape Left and Landscape Right.
+
+The old instructions were:
+
+- Label 4: Top edge points LEFT.
+- Label 5: Top edge points RIGHT.
+
+The correct course definitions are:
+
+- **Label 4: LEFT side edge UP, top edge RIGHT.**
+- **Label 5: RIGHT side edge UP, top edge LEFT.**
+
+Client A followed the original instructions when collecting the first six evaluation and robustness sessions.
+
+Corrected CSV copies were created by swapping labels 4 and 5 while preserving the sensor measurements.
+
+**Do not swap the already corrected CSV files again.**
+
+Changing exported CSV files does not automatically update the data stored inside the Android application. The phone's stored records must be corrected or excluded before using the built-in evaluation feature.
+
+## 3. Android Application
+
+The application is written in Kotlin and uses Android SensorManager and Jetpack Compose.
+
+### Main Components
+
+| File | Purpose |
+|---|---|
+| `Config.kt` | Pose labels and constants |
+| `Sensors.kt` | Gravity and accelerometer collection |
+| `Features.kt` | Feature extraction |
+| `Storage.kt` | Sensor-window storage and CSV export |
+| `Mlp.kt` | Neural network |
+| `Trainer.kt` | Local training and model evaluation |
+| `FlClient.kt` | HTTP connection to FL coordinator |
+| `AppVM.kt` | Application state and integration |
+| `PoseFLScreen.kt` | Android application interface |
+| `MainActivity.kt` | Android activity entry point |
+
+The existing `POSES` array is correct and must retain indices 0–5.
+
+## 4. Sensor Collection
+
+The application samples gravity and accelerometer readings at a requested rate of approximately 50 Hz.
+
+Samples are grouped into non-overlapping one-second windows.
+
+For each window, the application calculates sensor summary statistics and stores one CSV row.
+
+Each CSV row contains 17 columns:
+
+1. Session ID
+2. Dataset split
+3. Pose label
+4. Accelerometer mean X
+5. Accelerometer mean Y
+6. Accelerometer mean Z
+7. Gravity mean X
+8. Gravity mean Y
+9. Gravity mean Z
+10. Accelerometer median X
+11. Accelerometer median Y
+12. Accelerometer median Z
+13. Gravity median X
+14. Gravity median Y
+15. Gravity median Z
+16. Accelerometer magnitude standard deviation
+17. Timestamp
+
+CSV files have no header row.
+
+### Dataset Splits
+
+| Split | Purpose |
+|---|---|
+| `train` | Model training |
+| `test` | Standard six-pose evaluation |
+| `calib` | Calibration, tilt, and shake experiments |
+
+**Only `train` windows are used for training.**
+
+Never combine test or calibration windows with training data.
+
+## 5. Client Assignments
+
+The proposed non-IID training assignments are:
+
+| Client | Assigned Training Poses |
+|---|---|
+| Client A — Yateeka | 0, 1, 2 |
+| Client B — Zihan | 3, 4, 5 |
+
+**Both teammates must confirm these assignments before collecting training data.**
+
+Both phones record all six poses for evaluation.
+
+## 6. Training Data Collection
+
+Each client records six training sessions using only their three assigned poses.
+
+### Client A
+
+Session IDs:
+
+- `A_tr01`
+- `A_tr02`
+- `A_tr03`
+- `A_tr04`
+- `A_tr05`
+- `A_tr06`
+
+Split: `train`
+
+For each assigned pose in every session:
+
+1. Select the correct pose label.
+2. Tap Start Recording.
+3. Record 20 windows.
+4. Tap Stop.
+5. Pick up and reposition the phone.
+6. Record another 20 windows.
+7. Tap Stop.
+8. Continue to the next assigned pose.
+
+Expected per session:
+
+- 40 windows per pose
+- 3 poses
+- Approximately 120 windows
+
+Expected total:
+
+**6 sessions × 120 windows = approximately 720 training windows.**
+
+### Client B
+
+Use the same protocol with:
+
+- `B_tr01` through `B_tr06`
+- Split `train`
+- Assigned labels 3, 4, and 5
+
+## 7. Standard Test Data Collection
+
+Each client records all six poses.
+
+| Session | Surface or Condition | Split |
 |---|---|---|
-| `GET /model` | none | `{"round": 3, "weights": [214 floats]}` |
-| `POST /update` | `{"client_id": "A", "round": 3, "n_samples": 240, "weights": [214 floats]}` | HTTP 200 on success |
+| `A_te01` / `B_te01` | Stable table | `test` |
+| `A_te02` / `B_te02` | Hard notebook | `test` |
+| `A_te03` / `B_te03` | Handheld, as steady as possible | `test` |
 
-In round 0 the server should return initial random weights so both clients start from the same point.
+For each pose:
 
-## Requirements
+1. Record 10 windows.
+2. Stop.
+3. Reposition the phone.
+4. Record another 10 windows.
+5. Stop.
+6. Continue to the next label.
 
-- Android Studio (current stable) with Android SDK, minimum SDK 26
-- A real Android phone with USB debugging enabled (the emulator has no real sensor data)
-- [Tailscale](https://tailscale.com/) on the phone, signed in to the same tailnet as the laptop running the server
-- The FL server running and reachable at `http://<laptop-tailscale-ip>:8000`
+Expected: approximately 20 windows per pose, or 120 windows per session.
 
-## Project layout
+## 8. Calibration Collection
 
-All source files are in `app/src/main/java/com/csc8223/posefl/`.
+Session IDs:
 
-| File | Contents |
-|---|---|
-| `Config.kt` | Pose names, feature config enum, constants |
-| `Features.kt` | `Sample` data class, window summaries, feature vectors |
-| `Sensors.kt` | `SensorCollector` and `WindowBuilder` |
-| `Storage.kt` | CSV session store, CSV export, model file store |
-| `Mlp.kt` | MLP forward pass, backprop, SGD step |
-| `Trainer.kt` | Training loop, confusion matrix, accuracy, macro-F1 |
-| `FlClient.kt` | OkHttp client for `/model` and `/update` |
-| `AppVM.kt` | ViewModel connecting sensors, storage, training, and networking |
-| `MainActivity.kt` | Jetpack Compose UI (Collect, Train, Infer tabs) |
+- Client A: `A_cal01`
+- Client B: `B_cal01`
 
-Tests are in `app/src/test/java/com/csc8223/posefl/MlpTest.kt`.
+Split: `calib`
 
-## Setup
+Record all six poses on a stable table or desk.
 
-1. Clone the repository and open it in Android Studio. Let Gradle sync finish.
-2. Edit `app/src/main/res/xml/network_security_config.xml` and replace `100.x.y.z` with the server laptop's Tailscale IP. Android blocks cleartext HTTP unless the address is listed.
-3. On the phone, enable Developer options (tap Build number 7 times) and turn on USB debugging.
-4. Connect the phone by USB, accept the RSA prompt, select it in Android Studio, and press **Run**.
-5. On the phone, open `http://<laptop-tailscale-ip>:8000/docs` in the browser to confirm the server is reachable.
-6. In the app's Train tab, enter the same server URL and set the client ID (`A` or `B`).
+Record 15 windows per pose.
 
-## Usage
+Expected total: 90 windows.
 
-### 1. Collect data
+## 9. Tilt Collection
 
-1. Open the **Collect** tab. Set a Session ID (for example `A_tr01`), choose a split (`train`, `test`, or `calib`), and choose a pose label.
-2. Tap **Start recording**, place the phone in the pose, and keep it still. Tap **Stop recording** when done.
-3. Re-place the phone and repeat, then change the pose and repeat.
-4. Tap **Export CSV** at the end of every collecting day.
+Session IDs:
 
-Rules that keep the evaluation honest:
+- Client A: `A_tilt01`
+- Client B: `B_tilt01`
 
-- One sitting uses one Session ID and one split. Never share a session between train and test.
-- Training uses only windows tagged `train`. Evaluation uses only windows tagged `test`.
-- Change the Session ID for every new sitting.
+Split: `calib`
 
-Suggested session names: `A_tr01` to `A_tr06` (training), `A_te01` to `A_te03` (standard test), `A_cal01` (calibration), `A_tilt01` (tilted poses), `A_shake01` (shaky poses). Use `B_` on the second phone. Tilt, shake, and cross-device sittings are separated by session name during offline analysis.
+Record all six poses with an approximately 10–20 degree tilt away from their ideal orientation.
 
-### 2. Train and evaluate
+Use stable support when possible.
 
-On the **Train** tab:
+Record 20 windows per pose.
 
-1. Choose a feature config. Both clients must use the same config during an FL run.
-2. **Train local-only model** trains for 30 epochs (equal to 10 rounds of 3 epochs) from a fixed seed.
-3. **Eval local** reports accuracy, per-class accuracy, macro-F1, and the confusion matrix on `test` windows.
+Expected total: 120 windows.
 
-### 3. Federated rounds
+## 10. Shake Collection
 
-1. Both phones tap **Run FL round**. Each downloads the global weights, trains 3 epochs, and uploads.
-2. When the server has logged both updates and advanced the round, both phones tap **Refresh global model from server**.
-3. Repeat for 10 rounds, then tap **Eval global**.
+Session IDs:
 
-### 4. Live prediction
+- Client A: `A_shake01`
+- Client B: `B_shake01`
 
-On the **Infer** tab, choose `global` or `local`, choose the feature config, and tap **Start live prediction**. The prediction updates once per second.
+Split: `calib`
 
-## Data format
+Record all six poses while holding the phone with gentle natural hand movement.
 
-`windows.csv` (in the app's private storage, exported with the Export CSV button) has **no header row** and 17 columns:
+Record 20 windows per pose.
 
-| Columns | Content |
-|---|---|
-| 1 to 3 | session ID, split, label (0 to 5) |
-| 4 to 6 | accelerometer mean x, y, z |
-| 7 to 9 | gravity mean x, y, z |
-| 10 to 12 | accelerometer median x, y, z |
-| 13 to 15 | gravity median x, y, z |
-| 16 | accelerometer magnitude std |
-| 17 | timestamp (milliseconds) |
+Expected total: 120 windows.
 
-To pull the file from a debug build using a computer:
+## 11. Client A Completed Data Collection
 
+Yateeka has completed six evaluation and robustness sessions.
+
+| Session | Split | Windows | Condition |
+|---|---|---:|---|
+| `A_te01` | test | 121 | Table |
+| `A_te02` | test | 120 | Hard notebook |
+| `A_te03` | test | 120 | Handheld |
+| `A_cal01` | calib | 90 | Stable table or desk |
+| `A_tilt01` | calib | 120 | Supported tilt |
+| `A_shake01` | calib | 120 | Gentle hand tremor |
+| **Total** | | **691** | |
+
+All six corrected session-specific CSV files were checked for consistent landscape labels.
+
+An earlier tilt export contained an unrelated test row. The cleaned `A_tilt01` dataset contains 120 valid windows.
+
+**These 691 windows are evaluation and robustness data, not training data.**
+
+The six Client A training sessions remain to be collected.
+
+## 12. Feature Configurations
+
+Three feature configurations will be compared.
+
+### BASELINE
+
+Uses normalized accelerometer and gravity mean values.
+
+### GRAV_NORM
+
+Uses normalized gravity direction and gravity-removed acceleration.
+
+### ROBUST
+
+Uses median-based features and rejects windows exceeding the configured motion-variability threshold.
+
+All three configurations must be evaluated using comparable datasets.
+
+## 13. Local Neural Network
+
+PoseFL uses a multilayer perceptron (MLP) with:
+
+- 6 input neurons
+- 16 ReLU hidden neurons
+- 6 softmax output neurons
+- Cross-entropy loss
+- Stochastic gradient descent
+
+The model has 214 parameters.
+
+| Parameter | Shape | Offset |
+|---|---|---:|
+| W1 | 16 × 6 | 0 |
+| b1 | 16 | 96 |
+| W2 | 6 × 16 | 112 |
+| b2 | 6 | 208 |
+
+The Kotlin client and Python server must use the same weight ordering.
+
+## 14. Local Training and Evaluation
+
+After the training dataset has been collected and validated:
+
+1. Open the Train tab.
+2. Select `BASELINE`.
+3. Train the local model.
+4. Evaluate using the six-pose `test` dataset.
+5. Record accuracy, macro-F1, per-class accuracy, and confusion matrix.
+6. Repeat for `GRAV_NORM`.
+7. Repeat for `ROBUST`.
+
+**Before evaluating on Client A's phone, ensure the old in-app landscape labels have been corrected or excluded. Correcting exported CSVs alone is not sufficient.**
+
+Save the model results and screenshots.
+
+## 15. Federated Learning
+
+The Python FastAPI coordinator is assigned to Zihan.
+
+The planned server supports:
+
+```text
+GET /model
+POST /update
 ```
-adb exec-out run-as com.csc8223.posefl cat files/windows.csv > windows_A.csv
+
+Each federated round:
+
+1. Both clients download the global model.
+2. Both clients train locally using their own training windows.
+3. Each client uploads its model weights and sample count.
+4. The server calculates the weighted FedAvg model.
+5. Both clients download the updated global model.
+
+FedAvg:
+
+```text
+W_global = (nA * WA + nB * WB) / (nA + nB)
 ```
 
-## Reproducing the experiments
+The planned experiment uses:
 
-For each feature config (`BASELINE`, `GRAV_NORM`, `ROBUST`), using the same collected data:
+- 10 federated rounds
+- 3 local epochs per round
+- Learning rate 0.05
 
-1. Train and evaluate the local-only model on each phone.
-2. Run 10 FL rounds with 3 local epochs per round, then evaluate the global model on each phone.
-3. Compare the three models on the same six-pose test windows using overall accuracy, per-class accuracy, macro-F1, and confusion matrices.
-4. For robustness, repeat evaluation on the tilt and shake sessions, and on the other phone's test recordings for cross-device transfer.
+The server and final experiment settings must be confirmed by Zihan.
 
-Hyperparameters used: learning rate 0.05, per-sample SGD, 10 rounds, 3 local epochs per round, 30 epochs for local-only baselines. Adjust after pilot tests and report any changes.
+## 16. Results to Compare
 
-## Testing
+The final report will compare:
 
-Run the unit tests from Android Studio (right-click `MlpTest` and choose Run) or with:
+- Client A local model
+- Client B local model
+- FedAvg global model
+- BASELINE features
+- GRAV_NORM features
+- ROBUST features
+- Standard, tilt, and shake performance
+- Cross-device transfer
 
-```
-./gradlew test
-```
+Required metrics:
 
-They check that softmax outputs sum to 1, that backprop matches finite differences, that the model can overfit one sample, and that a flat screen-up window gives a unit z gravity vector.
+- Overall accuracy
+- Per-class accuracy
+- Macro-F1
+- Confusion matrices
 
-Before the first federated run, also confirm the Kotlin and server NumPy forward passes agree to about 1e-5 for the same weights and a fixed 6-number input. This catches any weight-layout mismatch.
+Results should be added only after experiments are completed.
 
-## Troubleshooting
+## 17. Current Project Status
 
-| Problem | Fix |
+| Task | Status |
 |---|---|
-| `CLEARTEXT communication not permitted` | The server IP is missing from `network_security_config.xml`, or differs from the URL in the app. |
-| Every request times out | Tailscale is off on the phone, or the server is not bound to `0.0.0.0`. Test the URL in the phone browser. |
-| `Expected 214 weights` | The server uses a different weight layout. Re-check the layout table above. |
-| `No train data for ROBUST` | `STD_MAX` rejected all windows. Raise it or record with the phone resting still. |
-| Gravity readout is zero | The phone has no gravity sensor. Move the phone slightly so the fallback low-pass filter warms up. |
-| Test accuracy is suspiciously perfect | Train and test windows probably came from the same sitting. Use separate sessions. |
-| Phone not detected by Android Studio | Try another cable (many are charge-only), check USB mode, accept the RSA prompt, and run `adb devices`. |
+| Client A evaluation data | Completed |
+| Client A calibration | Completed |
+| Client A tilt and shake recordings | Completed |
+| Corrected CSV exports | Completed |
+| Client A training sessions | Remaining |
+| Client B data collection | Needs confirmation |
+| Local model experiments | Remaining |
+| FL server implementation | Zihan to confirm |
+| Two-phone FL experiments | Remaining |
+| Final report and demonstration | Remaining |
 
-## Data loss warning
+## 18. Important Data Safety Instructions
 
-The **Clear data** button, uninstalling the app, and clearing storage in Android settings all delete the collected CSV and saved models. Export before doing any of these.
+- Keep original CSV exports as backups.
+- Do not swap already corrected landscape labels again.
+- Do not use `test` or `calib` data for training.
+- Do not uninstall the app or clear its data without backups.
+- Remember that exported CSV corrections do not modify records stored inside the Android app.
+- Use the course's corrected edge-up landscape definitions for all future recordings.
 
-## Team
+## 19. Team Responsibilities
 
-| Member | Primary ownership |
-|---|---|
-| Yateeka Goyal | Android client: sensors, collection UI, feature extraction, inference UI, HTTP client, on-device integration and testing |
-| Zihan Tang | Learning and FL server: MLP validation, FastAPI, FedAvg, SQLite persistence, Tailscale setup, metrics and analysis |
+### Yateeka Goyal
+
+- Android application and sensor collection
+- Pose labeling and data export
+- Feature extraction and inference UI
+- Android client integration
+- Client A training data collection
+- Client A local model evaluation
+- Joint federated testing and demonstration
+
+### Zihan Tang
+
+- MLP algorithm validation
+- FastAPI coordinator
+- FedAvg aggregation
+- SQLite persistence
+- Tailscale networking
+- Client B data collection
+- Metrics, scripts, and experimental analysis
+- Joint federated testing and demonstration
+
+## 20. Repository
+
+https://github.com/Yateeka/IOT-
 
 Course: CSC 8223.
