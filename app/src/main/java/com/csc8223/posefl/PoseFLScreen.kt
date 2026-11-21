@@ -55,10 +55,14 @@ fun PoseFLScreen(
                                 selected = vm.label == index,
                                 onClick = { vm.label = index }
                             )
-                            Text(
-                                pose,
-                                modifier = Modifier.padding(top = 12.dp)
-                            )
+                            Column(modifier = Modifier.padding(top = 8.dp)) {
+                                Text(pose)
+
+                                Text(
+                                    POSE_INSTRUCTIONS[index],
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
                         }
                     }
 
